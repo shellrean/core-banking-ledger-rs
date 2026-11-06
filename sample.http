@@ -1,0 +1,67 @@
+### 1. List All Accounts
+### Notice the Zero-Sum Invariant across the entire database:
+### - SYS-MINT-001 (SYSTEM):   -1,500,000
+### - ACC-1001 Alice (CUSTOMER): +1,000,000
+### - ACC-1002 Bob   (CUSTOMER):   +500,000
+### Total Sum of All Accounts == 0!
+GET http://localhost:9090/accounts
+
+### 2. Deposit / Mint New Money into Alice's Account (+250,000)
+### Under the hood, a Deposit is NOT a single-leg update!
+### It transfers from `SYSTEM_MINT` (00000000-0000-0000-0000-000000000001) -> Alice.
+### - SYS-MINT-001 posting: -250,000
+### - Alice posting:        +250,000
+### To prevent Hot-Account Lock Contention on `SYSTEM_MINT`, the journal starts with
+### `status = "PENDING_SETTLEMENT"`: Alice's balance updates immediately in real-time,
+### while `SYSTEM_MINT`'s balance is updated in batch by the EOD Settlement Worker!
+POST http://localhost:9090/deposits
+Content-Type: application/json
+
+{
+  "idempotency_key": "dep-alice-topup-001",
+  "to_account_id": "11111111-1111-1111-1111-111111111111",
+  "amount": 250000,
+  "description": "Bank Settlement Top-Up #001"
+}
+
+### 3. Trigger End-of-Day (EOD) Settlement for Hot Account (`SYSTEM_MINT`)
+### Aggregates all postings from `PENDING_SETTLEMENT` journals for `SYSTEM_MINT`,
+### updates `SYSTEM_MINT` balance in a single atomic batch, and transitions journals to `SETTLED`.
+POST http://localhost:9090/settlements/eod
+
+### 4. Execute Peer-to-Peer Transfer (Alice -> Bob: 150,000)
+### P2P transfers between customer accounts are settled immediately (`status = "SETTLED"`).
+### Send ONCE: idempotent_replay = false
+### Send AGAIN (same idempotency_key): idempotent_replay = true, balance is NOT deducted twice!
+POST http://localhost:9090/transfers
+Content-Type: application/json
+
+{
+  "idempotency_key": "tx-alice-to-bob-001",
+  "from_account_id": "11111111-1111-1111-1111-111111111111",
+  "to_account_id": "22222222-2222-2222-2222-222222222222",
+  "amount": 150000,
+  "description": "Invoice Payment #001"
+}
+
+### 5. Reverse Transfer (Bob -> Alice: 50,000)
+### Demonstrates Deadlock-Free Deterministic Locking (2222... -> 1111... still locks 1111... first, then 2222...)
+POST http://localhost:9090/transfers
+Content-Type: application/json
+
+{
+  "idempotency_key": "tx-bob-to-alice-002",
+  "from_account_id": "22222222-2222-2222-2222-222222222222",
+  "to_account_id": "11111111-1111-1111-1111-111111111111",
+  "amount": 50000,
+  "description": "Cashback Refund #002"
+}
+
+### 6. Create New Customer Account (Always starts at 0 balance, then fund via /deposits)
+POST http://localhost:9090/accounts
+Content-Type: application/json
+
+{
+  "account_number": "ACC-1003",
+  "owner_name": "Charlie"
+}
